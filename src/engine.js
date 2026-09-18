@@ -88,7 +88,8 @@ export function classifyMove(fen, uci, san, depth=2){
   const chess=new Chess(fen)
   const best=getBestMove(fen,depth)
   const stats=rankMove(fen,uci,depth)
-  if(chess.history().length<10) return {label:'BOOK MOVE',...stats,bestMove:best?.uci||''}
+  const fullmove=Number(chess.fen().split(' ')[5]||1)
+  if(fullmove<=5) return {label:'BOOK MOVE',...stats,bestMove:best?.uci||''}
   if(!best) return {label:'GOOD MOVE',...stats,bestMove:''}
   if(uci===best.uci) return {label:'BEST MOVE',...stats,bestMove:best.uci}
   const move=chess.move({from:uci.slice(0,2),to:uci.slice(2,4),promotion:uci.slice(4)||undefined})
