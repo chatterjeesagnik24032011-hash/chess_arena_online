@@ -63,3 +63,88 @@ begin
     alter publication supabase_realtime add table public.games;
   end if;
 end $$;
+
+
+-- Worldwide random matchmaking. The first available waiting player is matched;
+-- the second player always receives the opposite color. If nobody is waiting,
+-- the caller creates a waiting room with a randomly assigned color.
+create or replace function public.find_or_join_random_game(p_minutes integer default 10, p_increment integer default 0)
+returns table(game_id uuid, color text, status text)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+  g public.games%rowtype;
+  assigned_color text;
+begin
+  if uid is null then
+    raise exception 'You must be logged in to use random matchmaking.';
+  end if;
+  if p_minutes < 1 or p_minutes > 180 then
+    raise exception 'Invalid time control.';
+  end if;
+  if p_increment < 0 or p_increment > 3600 then
+    raise exception 'Invalid increment.';
+  end if;
+
+  -- Reuse the caller's own waiting room instead of creating duplicates.
+  select * into g
+  from public.games
+  where status = 'waiting'
+    and (white_id = uid or black_id = uid)
+  order by created_at asc
+  limit 1;
+  if found then
+    if g.white_id = uid then
+      return query select g.id, 'white'::text, g.status;
+    else
+      return query select g.id, 'black'::text, g.status;
+    end if;
+    return;
+  end if;
+
+  -- Lock one available room so two users cannot claim the same slot.
+  select * into g
+  from public.games
+  where status = 'waiting'
+    and (white_id is null or black_id is null)
+    and white_id is distinct from uid
+    and black_id is distinct from uid
+  order by created_at asc
+  for update skip locked
+  limit 1;
+
+  if found then
+    if g.white_id is null then
+      update public.games
+      set white_id = uid, status = 'active', updated_at = now()
+      where id = g.id;
+      return query select g.id, 'white'::text, 'active'::text;
+    else
+      update public.games
+      set black_id = uid, status = 'active', updated_at = now()
+      where id = g.id;
+      return query select g.id, 'black'::text, 'active'::text;
+    end if;
+    return;
+  end if;
+
+  assigned_color := case when random() < 0.5 then 'white' else 'black' end;
+  if assigned_color = 'white' then
+    insert into public.games(white_id, status, fen, moves, white_time, black_time, increment)
+    values(uid, 'waiting', 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', '[]'::jsonb, p_minutes*60000, p_minutes*60000, p_increment)
+    returning id into g.id;
+  else
+    insert into public.games(black_id, status, fen, moves, white_time, black_time, increment)
+    values(uid, 'waiting', 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', '[]'::jsonb, p_minutes*60000, p_minutes*60000, p_increment)
+    returning id into g.id;
+  end if;
+
+  return query select g.id, assigned_color, 'waiting'::text;
+end;
+$$;
+
+revoke all on function public.find_or_join_random_game(integer, integer) from public;
+grant execute on function public.find_or_join_random_game(integer, integer) to authenticated;

@@ -12,3 +12,7 @@ Web version of Chess Arena using Vite + React + chess.js + Supabase. The browser
 - Never put `SUPABASE_SECRET_KEY` in Vercel frontend variables.
 - The bot engine is the browser-safe port of the Python minimax/evaluation approach. The UI is structured so a Stockfish WASM adapter can be added without changing the board/review flow.
 - For a production competitive server, move authoritative online move validation to a Supabase Edge Function/RPC rather than trusting browser updates.
+
+
+## Worldwide Random Matchmaking
+Use **Join Random Player** to enter a shared matchmaking queue. The first waiting player gets a randomly assigned color; the next player is automatically assigned the opposite color. The queue is global to authenticated users using the same Supabase project. Run the updated `supabase/schema.sql` once to create the matchmaking RPC.
