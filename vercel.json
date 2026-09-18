@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/stockfish/:path*",
+      "destination": "https://cdn.jsdelivr.net/npm/stockfish@19.0.0/bin/:path*"
+    }
+  ]
+}
