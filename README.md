@@ -16,3 +16,7 @@ Web version of Chess Arena using Vite + React + chess.js + Supabase. The browser
 
 ## Worldwide Random Matchmaking
 Use **Join Random Player** to enter a shared matchmaking queue. The first waiting player gets a randomly assigned color; the next player is automatically assigned the opposite color. The queue is global to authenticated users using the same Supabase project. Run the updated `supabase/schema.sql` once to create the matchmaking RPC.
+
+
+## Random match confirmation
+Random matches now show the opponent display name and require each player to confirm before moves are enabled.

@@ -69,7 +69,7 @@ end $$;
 -- the second player always receives the opposite color. If nobody is waiting,
 -- the caller creates a waiting room with a randomly assigned color.
 create or replace function public.find_or_join_random_game(p_minutes integer default 10, p_increment integer default 0)
-returns table(game_id uuid, color text, game_status text)
+returns table(game_id uuid, color text, status text)
 language plpgsql
 security definer
 set search_path = public
@@ -90,42 +90,42 @@ begin
   end if;
 
   -- Reuse the caller's own waiting room instead of creating duplicates.
-  select gg.* into g
-  from public.games as gg
-  where gg.status = 'waiting'
-    and (gg.white_id = uid or gg.black_id = uid)
-  order by gg.created_at asc
+  select * into g
+  from public.games
+  where status = 'waiting'
+    and (white_id = uid or black_id = uid)
+  order by created_at asc
   limit 1;
   if found then
     if g.white_id = uid then
-      return query select g.id, 'white'::text, g.status::text;
+      return query select g.id, 'white'::text, g.status;
     else
-      return query select g.id, 'black'::text, g.status::text;
+      return query select g.id, 'black'::text, g.status;
     end if;
     return;
   end if;
 
   -- Lock one available room so two users cannot claim the same slot.
-  select gg.* into g
-  from public.games as gg
-  where gg.status = 'waiting'
-    and (gg.white_id is null or gg.black_id is null)
-    and gg.white_id is distinct from uid
-    and gg.black_id is distinct from uid
-  order by gg.created_at asc
+  select * into g
+  from public.games
+  where status = 'waiting'
+    and (white_id is null or black_id is null)
+    and white_id is distinct from uid
+    and black_id is distinct from uid
+  order by created_at asc
   for update skip locked
   limit 1;
 
   if found then
     if g.white_id is null then
-      update public.games as ug
+      update public.games
       set white_id = uid, status = 'active', updated_at = now()
-      where ug.id = g.id;
+      where id = g.id;
       return query select g.id, 'white'::text, 'active'::text;
     else
-      update public.games as ug
+      update public.games
       set black_id = uid, status = 'active', updated_at = now()
-      where ug.id = g.id;
+      where id = g.id;
       return query select g.id, 'black'::text, 'active'::text;
     end if;
     return;
