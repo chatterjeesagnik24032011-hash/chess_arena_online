@@ -1,150 +1,133 @@
-create extension if not exists pgcrypto;
+CREATE FUNCTION public.find_or_join_random_game(
+    p_minutes integer DEFAULT 10,
+    p_increment integer DEFAULT 0
+)
+RETURNS TABLE (
+    game_id uuid,
+    color text,
+    game_status text
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_user_id uuid;
+    v_game_id uuid;
+    v_color text;
+    v_status text;
+    v_seconds integer;
+BEGIN
+    -- Get logged-in user
+    v_user_id := auth.uid();
 
-create table if not exists public.profiles (
-  id uuid primary key references auth.users(id) on delete cascade,
-  display_name text not null,
-  created_at timestamptz not null default now()
-);
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'You must be logged in.';
+    END IF;
 
-create table if not exists public.games (
-  id uuid primary key default gen_random_uuid(),
-  white_id uuid references auth.users(id) on delete set null,
-  black_id uuid references auth.users(id) on delete set null,
-  status text not null default 'waiting' check (status in ('waiting','active','finished','abandoned')),
-  fen text not null,
-  moves jsonb not null default '[]'::jsonb,
-  white_time integer not null default 600000,
-  black_time integer not null default 600000,
-  increment integer not null default 0,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
+    -- Safety values
+    IF p_minutes IS NULL OR p_minutes < 1 THEN
+        p_minutes := 10;
+    END IF;
 
-alter table public.profiles enable row level security;
-alter table public.games enable row level security;
+    IF p_increment IS NULL OR p_increment < 0 THEN
+        p_increment := 0;
+    END IF;
 
--- Add clock columns safely when upgrading an existing project.
-alter table public.games add column if not exists white_time integer not null default 600000;
-alter table public.games add column if not exists black_time integer not null default 600000;
-alter table public.games add column if not exists increment integer not null default 0;
+    v_seconds := p_minutes * 60;
 
-drop policy if exists "profiles are readable" on public.profiles;
-drop policy if exists "users create own profile" on public.profiles;
-drop policy if exists "users update own profile" on public.profiles;
-drop policy if exists "players can read their games" on public.games;
-drop policy if exists "users can create games" on public.games;
-drop policy if exists "players can update games" on public.games;
-drop policy if exists "players can join waiting games" on public.games;
+    -- =====================================================
+    -- FIND AN EXISTING WAITING PLAYER
+    -- =====================================================
 
-create policy "profiles are readable" on public.profiles for select to authenticated using (true);
-create policy "users create own profile" on public.profiles for insert to authenticated with check (auth.uid()=id);
-create policy "users update own profile" on public.profiles for update to authenticated using (auth.uid()=id) with check (auth.uid()=id);
+    SELECT g.id
+    INTO v_game_id
+    FROM public.games AS g
+    WHERE g.status = 'waiting'
+      AND g.white_id IS NOT NULL
+      AND g.black_id IS NULL
+      AND g.white_id <> v_user_id
+      AND g.white_time = v_seconds
+      AND g.increment = p_increment
+    ORDER BY g.created_at ASC
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1;
 
-create policy "players can read their games" on public.games for select to authenticated
-using (auth.uid()=white_id or auth.uid()=black_id or status='waiting');
+    -- =====================================================
+    -- JOIN EXISTING GAME AS BLACK
+    -- =====================================================
 
-create policy "users can create games" on public.games for insert to authenticated
-with check (auth.uid()=white_id or auth.uid()=black_id);
+    IF v_game_id IS NOT NULL THEN
 
-create policy "players can join waiting games" on public.games for update to authenticated
-using (status='waiting' and (white_id is null or black_id is null))
-with check (auth.uid()=white_id or auth.uid()=black_id);
+        UPDATE public.games AS g
+        SET
+            black_id = v_user_id,
+            black_time = v_seconds,
+            status = 'active',
+            white_confirmed = false,
+            black_confirmed = false,
+            updated_at = now()
+        WHERE g.id = v_game_id;
 
-create policy "players can update games" on public.games for update to authenticated
-using (auth.uid()=white_id or auth.uid()=black_id)
-with check (auth.uid()=white_id or auth.uid()=black_id);
+        v_color := 'b';
+        v_status := 'active';
 
-do $$
-begin
-  if not exists (
-    select 1 from pg_publication_tables
-    where pubname='supabase_realtime' and schemaname='public' and tablename='games'
-  ) then
-    alter publication supabase_realtime add table public.games;
-  end if;
-end $$;
+        RETURN QUERY
+        SELECT
+            v_game_id,
+            v_color,
+            v_status;
 
+        RETURN;
+    END IF;
 
--- Worldwide random matchmaking. The first available waiting player is matched;
--- the second player always receives the opposite color. If nobody is waiting,
--- the caller creates a waiting room with a randomly assigned color.
-create or replace function public.find_or_join_random_game(p_minutes integer default 10, p_increment integer default 0)
-returns table(game_id uuid, color text, status text)
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  uid uuid := auth.uid();
-  g public.games%rowtype;
-  assigned_color text;
-begin
-  if uid is null then
-    raise exception 'You must be logged in to use random matchmaking.';
-  end if;
-  if p_minutes < 1 or p_minutes > 180 then
-    raise exception 'Invalid time control.';
-  end if;
-  if p_increment < 0 or p_increment > 3600 then
-    raise exception 'Invalid increment.';
-  end if;
+    -- =====================================================
+    -- NO PLAYER FOUND
+    -- CREATE WAITING GAME AS WHITE
+    -- =====================================================
 
-  -- Reuse the caller's own waiting room instead of creating duplicates.
-  select * into g
-  from public.games
-  where status = 'waiting'
-    and (white_id = uid or black_id = uid)
-  order by created_at asc
-  limit 1;
-  if found then
-    if g.white_id = uid then
-      return query select g.id, 'white'::text, g.status;
-    else
-      return query select g.id, 'black'::text, g.status;
-    end if;
-    return;
-  end if;
+    INSERT INTO public.games (
+        white_id,
+        black_id,
+        status,
+        fen,
+        moves,
+        white_time,
+        black_time,
+        increment,
+        white_confirmed,
+        black_confirmed,
+        created_at,
+        updated_at
+    )
+    VALUES (
+        v_user_id,
+        NULL,
+        'waiting',
+        'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+        '[]'::jsonb,
+        v_seconds,
+        v_seconds,
+        p_increment,
+        false,
+        false,
+        now(),
+        now()
+    )
+    RETURNING id INTO v_game_id;
 
-  -- Lock one available room so two users cannot claim the same slot.
-  select * into g
-  from public.games
-  where status = 'waiting'
-    and (white_id is null or black_id is null)
-    and white_id is distinct from uid
-    and black_id is distinct from uid
-  order by created_at asc
-  for update skip locked
-  limit 1;
+    v_color := 'w';
+    v_status := 'waiting';
 
-  if found then
-    if g.white_id is null then
-      update public.games
-      set white_id = uid, status = 'active', updated_at = now()
-      where id = g.id;
-      return query select g.id, 'white'::text, 'active'::text;
-    else
-      update public.games
-      set black_id = uid, status = 'active', updated_at = now()
-      where id = g.id;
-      return query select g.id, 'black'::text, 'active'::text;
-    end if;
-    return;
-  end if;
+    RETURN QUERY
+    SELECT
+        v_game_id,
+        v_color,
+        v_status;
 
-  assigned_color := case when random() < 0.5 then 'white' else 'black' end;
-  if assigned_color = 'white' then
-    insert into public.games(white_id, status, fen, moves, white_time, black_time, increment)
-    values(uid, 'waiting', 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', '[]'::jsonb, p_minutes*60000, p_minutes*60000, p_increment)
-    returning id into g.id;
-  else
-    insert into public.games(black_id, status, fen, moves, white_time, black_time, increment)
-    values(uid, 'waiting', 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', '[]'::jsonb, p_minutes*60000, p_minutes*60000, p_increment)
-    returning id into g.id;
-  end if;
-
-  return query select g.id, assigned_color, 'waiting'::text;
-end;
+END;
 $$;
 
-revoke all on function public.find_or_join_random_game(integer, integer) from public;
-grant execute on function public.find_or_join_random_game(integer, integer) to authenticated;
+GRANT EXECUTE
+ON FUNCTION public.find_or_join_random_game(integer, integer)
+TO authenticated;
