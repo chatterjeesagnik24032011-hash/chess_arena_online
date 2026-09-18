@@ -31,7 +31,7 @@ function ensureWorker() {
   return worker
 }
 
-export async function analyzeFen(fen, { depth = 3, timeout = 9000 } = {}) {
+export async function analyzeFen(fen, { depth = 2, timeout = 6000 } = {}) {
   const w = ensureWorker()
   const id = ++nextId
   return new Promise((resolve, reject) => {

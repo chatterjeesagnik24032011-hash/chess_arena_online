@@ -31,8 +31,8 @@ export function evaluate(chess){
 
 function orderedMoves(chess){
   return chess.moves({ verbose:true }).sort((a,b)=>{
-    const av=(a.captured?VALUE[a.captured]:0)+(a.promotion?VALUE[a.promotion]:0)+(a.san.includes('+')?80:0)
-    const bv=(b.captured?VALUE[b.captured]:0)+(b.promotion?VALUE[b.promotion]:0)+(b.san.includes('+')?80:0)
+    const av=(a.captured?VALUE[a.captured]:0)+(a.promotion?VALUE[a.promotion]:0)+(a.san.includes('+')?80:0)+(a.san.includes('#')?10000:0)
+    const bv=(b.captured?VALUE[b.captured]:0)+(b.promotion?VALUE[b.promotion]:0)+(b.san.includes('+')?80:0)+(b.san.includes('#')?10000:0)
     return bv-av
   })
 }
